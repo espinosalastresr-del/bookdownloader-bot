@@ -74,24 +74,36 @@ user_searches = {}
 # /START
 # ============================================================
 
-@bot.message_handler(
-    commands=["start"]
-)
+@bot.message_handler(commands=["start"])
 def start(message):
 
-    bot.send_message(
-
-        message.chat.id,
-
-        "📚 <b>Biblioteca Digital</b>\n\n"
-
-        "Envíame el nombre del documento que deseas buscar.\n\n"
-
-        "Ejemplo:\n"
-
-        "<code>Python Programming</code>"
-
+    print(
+        "🔥🔥🔥 HANDLER /START EJECUTADO",
+        flush=True
     )
+
+    try:
+
+        bot.send_message(
+
+            message.chat.id,
+
+            "TEST: Bot funcionando correctamente."
+
+        )
+
+        print(
+            "✅ MENSAJE ENVIADO",
+            flush=True
+        )
+
+    except Exception as e:
+
+        print(
+            "❌ ERROR:",
+            repr(e),
+            flush=True
+        )
 
 
 # ============================================================
