@@ -37,7 +37,7 @@ PORT = int(
 #
 WEBHOOK_URL = os.environ.get(
     "WEBHOOK_URL",
-    ""
+    "https://bookdownloader-bot.onrender.com"
 ).rstrip("/")
 
 
