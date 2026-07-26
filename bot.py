@@ -805,27 +805,37 @@ def download(call):
 # WEBHOOK
 # ============================================================
 
-@app.route(
-    "/webhook",
-    methods=["POST"]
-)
+@app.route("/webhook", methods=["POST"])
 def webhook():
+
+    print("🔥 WEBHOOK RECIBIDO", flush=True)
 
     try:
 
-        json_string = (
-            request
-            .get_data()
-            .decode("utf-8")
+        json_string = request.get_data().decode("utf-8")
+
+        print(
+            "📩 UPDATE RECIBIDO:",
+            json_string,
+            flush=True
         )
 
-        update = (
-            telebot.types.Update
-            .de_json(json_string)
+        update = telebot.types.Update.de_json(
+            json_string
+        )
+
+        print(
+            "🔄 PROCESANDO UPDATE...",
+            flush=True
         )
 
         bot.process_new_updates(
             [update]
+        )
+
+        print(
+            "✅ UPDATE PROCESADO",
+            flush=True
         )
 
         return "", 200
@@ -833,14 +843,15 @@ def webhook():
     except Exception as e:
 
         print(
-            f"WEBHOOK ERROR: {e}"
+            "❌ WEBHOOK ERROR:",
+            repr(e),
+            flush=True
         )
 
         return (
             "Webhook error",
             500
         )
-
 
 # ============================================================
 # HEALTH CHECK
