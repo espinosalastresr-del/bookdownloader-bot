@@ -806,69 +806,39 @@ def download(call):
 # ============================================================
 
 @app.route(
-
-    WEBHOOK_PATH,
-
+    "/webhook",
     methods=["POST"]
-
 )
 def webhook():
 
     try:
 
         json_string = (
-
             request
-
             .get_data()
-
-            .decode(
-
-                "utf-8"
-
-            )
-
+            .decode("utf-8")
         )
-
 
         update = (
-
             telebot.types.Update
-
-            .de_json(
-
-                json_string
-
-            )
-
+            .de_json(json_string)
         )
-
 
         bot.process_new_updates(
-
             [update]
-
         )
 
-
         return "", 200
-
 
     except Exception as e:
 
         print(
-
             f"WEBHOOK ERROR: {e}"
-
         )
 
-
         return (
-
             "Webhook error",
-
             500
-
         )
 
 
@@ -895,94 +865,16 @@ def health():
 
 
 # ============================================================
-# CONFIGURAR WEBHOOK
-# ============================================================
-
-def setup_webhook():
-
-    if not WEBHOOK_URL:
-
-        print(
-
-            "⚠️ WEBHOOK_URL no configurada."
-
-        )
-
-        return
-
-
-    webhook_url = (
-
-        WEBHOOK_URL
-
-        + WEBHOOK_PATH
-
-    )
-
-
-    print(
-
-        "Configurando webhook..."
-
-    )
-
-
-    print(
-
-        webhook_url
-
-    )
-
-
-    try:
-
-        result = bot.set_webhook(
-
-            url=webhook_url
-
-        )
-
-
-        print(
-
-            "Webhook configurado:",
-
-            result
-
-        )
-
-
-    except Exception as e:
-
-        print(
-
-            "Error configurando webhook:",
-
-            e
-
-        )
-
-
-# ============================================================
 # MAIN
 # ============================================================
 
 if __name__ == "__main__":
 
-    setup_webhook()
-
-
     print(
-
         "Bot iniciado mediante webhook."
-
     )
 
-
     app.run(
-
         host="0.0.0.0",
-
         port=PORT
-
     )
