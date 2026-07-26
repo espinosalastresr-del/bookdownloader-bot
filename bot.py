@@ -43,7 +43,7 @@ WEBHOOK_URL = os.environ.get(
 
 # Ruta privada del webhook.
 # Telegram enviará los updates aquí.
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_PATH = f"/webhook"
 
 
 # ============================================================
