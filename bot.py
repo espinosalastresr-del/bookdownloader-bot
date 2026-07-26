@@ -1,12 +1,54 @@
 import os
+import re
+import tempfile
+
 import requests
 import telebot
 
+from flask import Flask, request
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-API_URL = os.environ["API_URL"].rstrip("/")
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
 
+BOT_TOKEN = os.environ.get(
+    "BOT_TOKEN",
+    "8867573523:AAE0SOGYlOqlSq5odJD2Cnyp7cLiTwm6Rmw"
+)
+
+API_URL = os.environ.get(
+    "API_URL",
+    "https://bookdownloader-api.onrender.com/"
+).rstrip("/")
+
+# Render asigna automáticamente la variable PORT
+PORT = int(
+    os.environ.get(
+        "PORT",
+        "10000"
+    )
+)
+
+# URL pública del Web Service de Render.
+#
+# Ejemplo:
+# https://bookdownloader-bot.onrender.com
+#
+WEBHOOK_URL = os.environ.get(
+    "WEBHOOK_URL",
+    ""
+).rstrip("/")
+
+
+# Ruta privada del webhook.
+# Telegram enviará los updates aquí.
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+
+
+# ============================================================
+# BOT
+# ============================================================
 
 bot = telebot.TeleBot(
     BOT_TOKEN,
@@ -14,10 +56,27 @@ bot = telebot.TeleBot(
 )
 
 
+# ============================================================
+# FLASK
+# ============================================================
+
+app = Flask(__name__)
+
+
+# ============================================================
+# MEMORIA DE BÚSQUEDAS
+# ============================================================
+
 user_searches = {}
 
 
-@bot.message_handler(commands=["start"])
+# ============================================================
+# /START
+# ============================================================
+
+@bot.message_handler(
+    commands=["start"]
+)
 def start(message):
 
     bot.send_message(
@@ -35,8 +94,13 @@ def start(message):
     )
 
 
+# ============================================================
+# /HELP
+# ============================================================
 
-@bot.message_handler(commands=["help"])
+@bot.message_handler(
+    commands=["help"]
+)
 def help_command(message):
 
     bot.send_message(
@@ -52,11 +116,20 @@ def help_command(message):
     )
 
 
+# ============================================================
+# BÚSQUEDA
+# ============================================================
 
 @bot.message_handler(
     func=lambda message: True
 )
 def search(message):
+
+    # Evitar errores cuando el mensaje no tiene texto
+    if not message.text:
+
+        return
+
 
     query = message.text.strip()
 
@@ -117,6 +190,7 @@ def search(message):
             return
 
 
+        # Guardar resultados de la búsqueda
         user_searches[
             message.from_user.id
         ] = {
@@ -124,6 +198,8 @@ def search(message):
             book["md5"]: book
 
             for book in books
+
+            if book.get("md5")
 
         }
 
@@ -137,6 +213,7 @@ def search(message):
         )
 
 
+        # Mostrar máximo 10 resultados
         for book in books[:10]:
 
             send_book(
@@ -148,9 +225,33 @@ def search(message):
             )
 
 
+    except requests.RequestException as e:
+
+        print(
+
+            f"API ERROR: {e}"
+
+        )
+
+
+        bot.edit_message_text(
+
+            "⚠️ No se pudo conectar con el servidor.",
+
+            message.chat.id,
+
+            msg.message_id
+
+        )
+
+
     except Exception as e:
 
-        print(e)
+        print(
+
+            f"SEARCH ERROR: {e}"
+
+        )
 
 
         bot.edit_message_text(
@@ -164,12 +265,14 @@ def search(message):
         )
 
 
+# ============================================================
+# MOSTRAR LIBRO
+# ============================================================
 
 def send_book(
     chat_id,
     book
 ):
-
 
     title = book.get(
         "title",
@@ -213,7 +316,14 @@ def send_book(
     )
 
 
-    md5 = book["md5"]
+    md5 = book.get(
+        "md5"
+    )
+
+
+    if not md5:
+
+        return
 
 
     text = (
@@ -235,7 +345,9 @@ def send_book(
     )
 
 
-    keyboard = telebot.types.InlineKeyboardMarkup()
+    keyboard = (
+        telebot.types.InlineKeyboardMarkup()
+    )
 
 
     keyboard.add(
@@ -256,11 +368,21 @@ def send_book(
     )
 
 
+    # ========================================================
+    # PORTADA
+    # ========================================================
+
     if cover:
 
         if cover.startswith("/"):
 
-            cover = API_URL + cover
+            cover = (
+
+                API_URL
+
+                + cover
+
+            )
 
 
         try:
@@ -279,10 +401,19 @@ def send_book(
 
             return
 
+
         except Exception as e:
 
-            print(e)
+            print(
 
+                f"COVER ERROR: {e}"
+
+            )
+
+
+    # ========================================================
+    # SI NO HAY PORTADA
+    # ========================================================
 
     bot.send_message(
 
@@ -295,19 +426,29 @@ def send_book(
     )
 
 
+# ============================================================
+# CALLBACK DE DESCARGA
+# ============================================================
 
 @bot.callback_query_handler(
+
     func=lambda call:
+
         call.data.startswith(
+
             "download:"
+
         )
+
 )
 def download(call):
 
-
     md5 = call.data.split(
+
         ":",
+
         1
+
     )[1]
 
 
@@ -320,13 +461,21 @@ def download(call):
     )
 
 
+    # ========================================================
+    # RECUPERAR LIBRO
+    # ========================================================
+
     book = user_searches.get(
 
         call.from_user.id,
 
         {}
 
-    ).get(md5)
+    ).get(
+
+        md5
+
+    )
 
 
     if not book:
@@ -351,6 +500,10 @@ def download(call):
     )
 
 
+    # ========================================================
+    # MENSAJE DE ESTADO
+    # ========================================================
+
     status = bot.send_message(
 
         call.message.chat.id,
@@ -360,7 +513,14 @@ def download(call):
     )
 
 
+    temp_path = None
+
+
     try:
+
+        # ====================================================
+        # SOLICITAR ARCHIVO A LA API
+        # ====================================================
 
         response = requests.get(
 
@@ -375,6 +535,10 @@ def download(call):
 
         response.raise_for_status()
 
+
+        # ====================================================
+        # DETERMINAR NOMBRE DEL ARCHIVO
+        # ====================================================
 
         filename = (
 
@@ -406,9 +570,6 @@ def download(call):
 
         if content_disposition:
 
-            import re
-
-
             match = re.search(
 
                 r'filename="?([^"]+)"?',
@@ -423,14 +584,46 @@ def download(call):
                 filename = match.group(1)
 
 
-        temp_path = (
+        # Evitar caracteres inválidos
+        filename = re.sub(
 
-            f"/tmp/{call.from_user.id}_"
+            r'[\\/*?:"<>|]',
 
-            f"{filename}"
+            "_",
+
+            filename
 
         )
 
+
+        # ====================================================
+        # CREAR ARCHIVO TEMPORAL
+        # ====================================================
+
+        temp = tempfile.NamedTemporaryFile(
+
+            delete=False,
+
+            prefix=(
+
+                f"{call.from_user.id}_"
+
+            ),
+
+            suffix="_download"
+
+        )
+
+
+        temp_path = temp.name
+
+
+        temp.close()
+
+
+        # ====================================================
+        # GUARDAR STREAM
+        # ====================================================
 
         with open(
 
@@ -451,6 +644,10 @@ def download(call):
                     file.write(chunk)
 
 
+        # ====================================================
+        # ENVIAR A TELEGRAM
+        # ====================================================
+
         with open(
 
             temp_path,
@@ -465,6 +662,8 @@ def download(call):
 
                 file,
 
+                visible_file_name=filename,
+
                 caption=(
 
                     f"📚 {title}\n\n"
@@ -476,12 +675,34 @@ def download(call):
             )
 
 
-        os.remove(
+        # ====================================================
+        # ELIMINAR ARCHIVO TEMPORAL
+        # ====================================================
+
+        if (
 
             temp_path
 
-        )
+            and
 
+            os.path.exists(
+
+                temp_path
+
+            )
+
+        ):
+
+            os.remove(
+
+                temp_path
+
+            )
+
+
+        # ====================================================
+        # ELIMINAR MENSAJE DE ESTADO
+        # ====================================================
 
         bot.delete_message(
 
@@ -492,14 +713,39 @@ def download(call):
         )
 
 
-    except Exception as e:
+    except requests.RequestException as e:
 
-        print(e)
+        print(
+
+            f"DOWNLOAD API ERROR: {e}"
+
+        )
+
+
+        if (
+
+            temp_path
+
+            and
+
+            os.path.exists(
+
+                temp_path
+
+            )
+
+        ):
+
+            os.remove(
+
+                temp_path
+
+            )
 
 
         bot.edit_message_text(
 
-            "❌ No se pudo descargar el documento.",
+            "❌ No se pudo obtener el archivo desde la API.",
 
             call.message.chat.id,
 
@@ -508,16 +754,235 @@ def download(call):
         )
 
 
+    except Exception as e:
 
-if __name__ == "__main__":
+        print(
 
-    print(
+            f"DOWNLOAD ERROR: {e}"
 
-        "Bot iniciado..."
+        )
+
+
+        if (
+
+            temp_path
+
+            and
+
+            os.path.exists(
+
+                temp_path
+
+            )
+
+        ):
+
+            os.remove(
+
+                temp_path
+
+            )
+
+
+        try:
+
+            bot.edit_message_text(
+
+                "❌ No se pudo completar la descarga.",
+
+                call.message.chat.id,
+
+                status.message_id
+
+            )
+
+        except Exception:
+
+            pass
+
+
+# ============================================================
+# WEBHOOK
+# ============================================================
+
+@app.route(
+
+    WEBHOOK_PATH,
+
+    methods=["POST"]
+
+)
+def webhook():
+
+    try:
+
+        json_string = (
+
+            request
+
+            .get_data()
+
+            .decode(
+
+                "utf-8"
+
+            )
+
+        )
+
+
+        update = (
+
+            telebot.types.Update
+
+            .de_json(
+
+                json_string
+
+            )
+
+        )
+
+
+        bot.process_new_updates(
+
+            [update]
+
+        )
+
+
+        return "", 200
+
+
+    except Exception as e:
+
+        print(
+
+            f"WEBHOOK ERROR: {e}"
+
+        )
+
+
+        return (
+
+            "Webhook error",
+
+            500
+
+        )
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route(
+
+    "/",
+
+    methods=["GET"]
+
+)
+def health():
+
+    return {
+
+        "status": "ok",
+
+        "service": "telegram-bot"
+
+    }
+
+
+# ============================================================
+# CONFIGURAR WEBHOOK
+# ============================================================
+
+def setup_webhook():
+
+    if not WEBHOOK_URL:
+
+        print(
+
+            "⚠️ WEBHOOK_URL no configurada."
+
+        )
+
+        return
+
+
+    webhook_url = (
+
+        WEBHOOK_URL
+
+        + WEBHOOK_PATH
 
     )
 
 
-    bot.infinity_polling(
-        skip_pending=True
+    print(
+
+        "Configurando webhook..."
+
+    )
+
+
+    print(
+
+        webhook_url
+
+    )
+
+
+    try:
+
+        result = bot.set_webhook(
+
+            url=webhook_url
+
+        )
+
+
+        print(
+
+            "Webhook configurado:",
+
+            result
+
+        )
+
+
+    except Exception as e:
+
+        print(
+
+            "Error configurando webhook:",
+
+            e
+
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    setup_webhook()
+
+
+    print(
+
+        "Bot iniciado mediante webhook."
+
+    )
+
+
+    app.run(
+
+        host="0.0.0.0",
+
+        port=PORT
+
     )
