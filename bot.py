@@ -22,7 +22,6 @@ API_URL = os.environ.get(
     "https://bookdownloader-api.onrender.com/"
 ).rstrip("/")
 
-# Render asigna automáticamente la variable PORT
 PORT = int(
     os.environ.get(
         "PORT",
@@ -30,24 +29,9 @@ PORT = int(
     )
 )
 
-# URL pública del Web Service de Render.
-#
-# Ejemplo:
-# https://bookdownloader-bot.onrender.com
-#
-WEBHOOK_URL = os.environ.get(
-    "WEBHOOK_URL",
-    "https://bookdownloader-bot.onrender.com"
-).rstrip("/")
-
-
-# Ruta privada del webhook.
-# Telegram enviará los updates aquí.
-WEBHOOK_PATH = f"/webhook"
-
 
 # ============================================================
-# BOT
+# TELEGRAM BOT
 # ============================================================
 
 bot = telebot.TeleBot(
@@ -64,60 +48,46 @@ app = Flask(__name__)
 
 
 # ============================================================
-# MEMORIA DE BÚSQUEDAS
+# MEMORIA TEMPORAL
 # ============================================================
+
+# user_id -> {
+#     md5 -> book
+# }
 
 user_searches = {}
 
 
 # ============================================================
-# /START
+# START
 # ============================================================
 
-@bot.message_handler(commands=["start"])
 def start(message):
 
-    print(
-        "🔥🔥🔥 HANDLER /START EJECUTADO",
-        flush=True
+    bot.send_message(
+
+        message["chat"]["id"],
+
+        "📚 <b>Biblioteca Digital</b>\n\n"
+
+        "Envíame el nombre del documento que deseas buscar.\n\n"
+
+        "Ejemplo:\n"
+
+        "<code>Python Programming</code>"
+
     )
 
-    try:
-
-        bot.send_message(
-
-            message.chat.id,
-
-            "TEST: Bot funcionando correctamente."
-
-        )
-
-        print(
-            "✅ MENSAJE ENVIADO",
-            flush=True
-        )
-
-    except Exception as e:
-
-        print(
-            "❌ ERROR:",
-            repr(e),
-            flush=True
-        )
-
 
 # ============================================================
-# /HELP
+# HELP
 # ============================================================
 
-@bot.message_handler(
-    commands=["help"]
-)
 def help_command(message):
 
     bot.send_message(
 
-        message.chat.id,
+        message["chat"]["id"],
 
         "📚 <b>Ayuda</b>\n\n"
 
@@ -132,18 +102,16 @@ def help_command(message):
 # BÚSQUEDA
 # ============================================================
 
-@bot.message_handler(
-    func=lambda message: True
-)
 def search(message):
 
-    # Evitar errores cuando el mensaje no tiene texto
-    if not message.text:
+    chat_id = message["chat"]["id"]
 
-        return
+    user_id = message["from"]["id"]
 
-
-    query = message.text.strip()
+    query = message.get(
+        "text",
+        ""
+    ).strip()
 
 
     if not query:
@@ -153,7 +121,7 @@ def search(message):
 
     msg = bot.send_message(
 
-        message.chat.id,
+        chat_id,
 
         "🔎 Buscando..."
 
@@ -182,8 +150,11 @@ def search(message):
 
 
         books = data.get(
+
             "books",
+
             []
+
         )
 
 
@@ -193,7 +164,7 @@ def search(message):
 
                 "❌ No se encontraron resultados.",
 
-                message.chat.id,
+                chat_id,
 
                 msg.message_id
 
@@ -202,9 +173,14 @@ def search(message):
             return
 
 
-        # Guardar resultados de la búsqueda
+        # ====================================================
+        # GUARDAR RESULTADOS
+        # ====================================================
+
         user_searches[
-            message.from_user.id
+
+            user_id
+
         ] = {
 
             book["md5"]: book
@@ -216,21 +192,34 @@ def search(message):
         }
 
 
-        bot.delete_message(
+        # ====================================================
+        # ELIMINAR MENSAJE "BUSCANDO"
+        # ====================================================
 
-            message.chat.id,
+        try:
 
-            msg.message_id
+            bot.delete_message(
 
-        )
+                chat_id,
+
+                msg.message_id
+
+            )
+
+        except Exception:
+
+            pass
 
 
-        # Mostrar máximo 10 resultados
+        # ====================================================
+        # MOSTRAR RESULTADOS
+        # ====================================================
+
         for book in books[:10]:
 
             send_book(
 
-                message.chat.id,
+                chat_id,
 
                 book
 
@@ -241,44 +230,64 @@ def search(message):
 
         print(
 
-            f"API ERROR: {e}"
+            "SEARCH API ERROR:",
+
+            repr(e),
+
+            flush=True
 
         )
 
 
-        bot.edit_message_text(
+        try:
 
-            "⚠️ No se pudo conectar con el servidor.",
+            bot.edit_message_text(
 
-            message.chat.id,
+                "⚠️ No se pudo conectar con el servidor.",
 
-            msg.message_id
+                chat_id,
 
-        )
+                msg.message_id
+
+            )
+
+        except Exception:
+
+            pass
 
 
     except Exception as e:
 
         print(
 
-            f"SEARCH ERROR: {e}"
+            "SEARCH ERROR:",
+
+            repr(e),
+
+            flush=True
 
         )
 
 
-        bot.edit_message_text(
+        try:
 
-            "⚠️ Error al realizar la búsqueda.",
+            bot.edit_message_text(
 
-            message.chat.id,
+                "⚠️ Error al realizar la búsqueda.",
 
-            msg.message_id
+                chat_id,
 
-        )
+                msg.message_id
+
+            )
+
+        except Exception:
+
+            pass
 
 
 # ============================================================
-# MOSTRAR LIBRO
+# MOSTRAR RESULTADO
 # ============================================================
 
 def send_book(
@@ -287,49 +296,72 @@ def send_book(
 ):
 
     title = book.get(
+
         "title",
+
         "Sin título"
+
     )
 
 
     author = book.get(
+
         "author",
+
         "Desconocido"
+
     )
 
 
     publisher = book.get(
+
         "publisher",
+
         "Desconocido"
+
     )
 
 
     year = book.get(
+
         "year",
+
         "N/A"
+
     )
 
 
     language = book.get(
+
         "language",
+
         "N/A"
+
     )
 
 
     file_type = book.get(
+
         "file_type",
+
         "N/A"
+
     )
 
 
     size = book.get(
+
         "size",
+
         "N/A"
+
     )
 
 
     md5 = book.get(
+
         "md5"
+
     )
 
 
@@ -337,6 +369,10 @@ def send_book(
 
         return
 
+
+    # ========================================================
+    # TEXTO
+    # ========================================================
 
     text = (
 
@@ -357,8 +393,14 @@ def send_book(
     )
 
 
+    # ========================================================
+    # BOTÓN
+    # ========================================================
+
     keyboard = (
+
         telebot.types.InlineKeyboardMarkup()
+
     )
 
 
@@ -368,21 +410,27 @@ def send_book(
 
             "⬇️ Descargar",
 
-            callback_data=f"download:{md5}"
+            callback_data=(
+
+                f"download:{md5}"
+
+            )
 
         )
 
     )
 
 
-    cover = book.get(
-        "cover"
-    )
-
-
     # ========================================================
     # PORTADA
     # ========================================================
+
+    cover = book.get(
+
+        "cover"
+
+    )
+
 
     if cover:
 
@@ -418,13 +466,17 @@ def send_book(
 
             print(
 
-                f"COVER ERROR: {e}"
+                "COVER ERROR:",
+
+                repr(e),
+
+                flush=True
 
             )
 
 
     # ========================================================
-    # SI NO HAY PORTADA
+    # SIN PORTADA
     # ========================================================
 
     bot.send_message(
@@ -439,23 +491,44 @@ def send_book(
 
 
 # ============================================================
-# CALLBACK DE DESCARGA
+# DESCARGA
 # ============================================================
 
-@bot.callback_query_handler(
+def download(
+    callback
+):
 
-    func=lambda call:
+    user_id = (
 
-        call.data.startswith(
+        callback["from"]["id"]
 
-            "download:"
+    )
 
-        )
 
-)
-def download(call):
+    chat_id = (
 
-    md5 = call.data.split(
+        callback["message"]["chat"]["id"]
+
+    )
+
+
+    message_id = (
+
+        callback["message"]["message_id"]
+
+    )
+
+
+    data = callback.get(
+
+        "data",
+
+        ""
+
+    )
+
+
+    md5 = data.split(
 
         ":",
 
@@ -464,9 +537,13 @@ def download(call):
     )[1]
 
 
+    # ========================================================
+    # RESPONDER AL CALLBACK
+    # ========================================================
+
     bot.answer_callback_query(
 
-        call.id,
+        callback["id"],
 
         "⏳ Preparando descarga..."
 
@@ -474,18 +551,26 @@ def download(call):
 
 
     # ========================================================
-    # RECUPERAR LIBRO
+    # BUSCAR LIBRO
     # ========================================================
 
-    book = user_searches.get(
+    book = (
 
-        call.from_user.id,
+        user_searches
 
-        {}
+        .get(
 
-    ).get(
+            user_id,
 
-        md5
+            {}
+
+        )
+
+        .get(
+
+            md5
+
+        )
 
     )
 
@@ -494,7 +579,7 @@ def download(call):
 
         bot.send_message(
 
-            call.message.chat.id,
+            chat_id,
 
             "❌ El resultado ya no está disponible."
 
@@ -513,14 +598,16 @@ def download(call):
 
 
     # ========================================================
-    # MENSAJE DE ESTADO
+    # ESTADO
     # ========================================================
 
     status = bot.send_message(
 
-        call.message.chat.id,
+        chat_id,
 
-        f"⬇️ Descargando:\n<b>{title}</b>"
+        f"⬇️ Descargando:\n"
+
+        f"<b>{title}</b>"
 
     )
 
@@ -531,7 +618,7 @@ def download(call):
     try:
 
         # ====================================================
-        # SOLICITAR ARCHIVO A LA API
+        # SOLICITAR ARCHIVO
         # ====================================================
 
         response = requests.get(
@@ -549,7 +636,7 @@ def download(call):
 
 
         # ====================================================
-        # DETERMINAR NOMBRE DEL ARCHIVO
+        # NOMBRE DEL ARCHIVO
         # ====================================================
 
         filename = (
@@ -593,10 +680,17 @@ def download(call):
 
             if match:
 
-                filename = match.group(1)
+                filename = (
+
+                    match.group(1)
+
+                )
 
 
-        # Evitar caracteres inválidos
+        # ====================================================
+        # LIMPIAR NOMBRE
+        # ====================================================
+
         filename = re.sub(
 
             r'[\\/*?:"<>|]',
@@ -609,20 +703,18 @@ def download(call):
 
 
         # ====================================================
-        # CREAR ARCHIVO TEMPORAL
+        # ARCHIVO TEMPORAL
         # ====================================================
 
-        temp = tempfile.NamedTemporaryFile(
+        temp = (
 
-            delete=False,
+            tempfile.NamedTemporaryFile(
 
-            prefix=(
+                delete=False,
 
-                f"{call.from_user.id}_"
+                suffix="_download"
 
-            ),
-
-            suffix="_download"
+            )
 
         )
 
@@ -634,7 +726,7 @@ def download(call):
 
 
         # ====================================================
-        # GUARDAR STREAM
+        # GUARDAR DESCARGA
         # ====================================================
 
         with open(
@@ -653,7 +745,11 @@ def download(call):
 
                 if chunk:
 
-                    file.write(chunk)
+                    file.write(
+
+                        chunk
+
+                    )
 
 
         # ====================================================
@@ -670,7 +766,7 @@ def download(call):
 
             bot.send_document(
 
-                call.message.chat.id,
+                chat_id,
 
                 file,
 
@@ -688,7 +784,7 @@ def download(call):
 
 
         # ====================================================
-        # ELIMINAR ARCHIVO TEMPORAL
+        # BORRAR TEMPORAL
         # ====================================================
 
         if (
@@ -713,67 +809,40 @@ def download(call):
 
 
         # ====================================================
-        # ELIMINAR MENSAJE DE ESTADO
+        # BORRAR ESTADO
         # ====================================================
 
-        bot.delete_message(
+        try:
 
-            call.message.chat.id,
+            bot.delete_message(
 
-            status.message_id
+                chat_id,
 
-        )
-
-
-    except requests.RequestException as e:
-
-        print(
-
-            f"DOWNLOAD API ERROR: {e}"
-
-        )
-
-
-        if (
-
-            temp_path
-
-            and
-
-            os.path.exists(
-
-                temp_path
+                status.message_id
 
             )
 
-        ):
+        except Exception:
 
-            os.remove(
-
-                temp_path
-
-            )
-
-
-        bot.edit_message_text(
-
-            "❌ No se pudo obtener el archivo desde la API.",
-
-            call.message.chat.id,
-
-            status.message_id
-
-        )
+            pass
 
 
     except Exception as e:
 
         print(
 
-            f"DOWNLOAD ERROR: {e}"
+            "DOWNLOAD ERROR:",
+
+            repr(e),
+
+            flush=True
 
         )
 
+
+        # ====================================================
+        # LIMPIAR TEMPORAL
+        # ====================================================
 
         if (
 
@@ -789,12 +858,22 @@ def download(call):
 
         ):
 
-            os.remove(
+            try:
 
-                temp_path
+                os.remove(
 
-            )
+                    temp_path
 
+                )
+
+            except Exception:
+
+                pass
+
+
+        # ====================================================
+        # ERROR
+        # ====================================================
 
         try:
 
@@ -802,7 +881,7 @@ def download(call):
 
                 "❌ No se pudo completar la descarga.",
 
-                call.message.chat.id,
+                chat_id,
 
                 status.message_id
 
@@ -817,53 +896,183 @@ def download(call):
 # WEBHOOK
 # ============================================================
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
+@app.route(
 
-    print("🔥 WEBHOOK RECIBIDO", flush=True)
+    "/webhook",
+
+    methods=["POST"]
+
+)
+def webhook():
 
     try:
 
-        json_string = request.get_data().decode("utf-8")
+        data = request.get_json(
+
+            force=True
+
+        )
+
+
+        if not data:
+
+            return (
+
+                "Bad Request",
+
+                400
+
+            )
+
 
         print(
-            "📩 UPDATE RECIBIDO:",
-            json_string,
+
+            "🔥 WEBHOOK RECIBIDO",
+
             flush=True
+
         )
 
-        update = telebot.types.Update.de_json(
-            json_string
+
+        # ====================================================
+        # MESSAGE
+        # ====================================================
+
+        if "message" in data:
+
+            message = data["message"]
+
+
+            text = message.get(
+
+                "text",
+
+                ""
+
+            )
+
+
+            print(
+
+                f"💬 MESSAGE: {text}",
+
+                flush=True
+
+            )
+
+
+            if text == "/start":
+
+                start(
+
+                    message
+
+                )
+
+
+            elif text == "/help":
+
+                help_command(
+
+                    message
+
+                )
+
+
+            elif text.startswith("/"):
+
+                bot.send_message(
+
+                    message["chat"]["id"],
+
+                    "❓ Comando desconocido."
+
+                )
+
+
+            else:
+
+                search(
+
+                    message
+
+                )
+
+
+        # ====================================================
+        # CALLBACK QUERY
+        # ====================================================
+
+        elif "callback_query" in data:
+
+            callback = data[
+
+                "callback_query"
+
+            ]
+
+
+            callback_data = callback.get(
+
+                "data",
+
+                ""
+
+            )
+
+
+            print(
+
+                f"🔘 CALLBACK: {callback_data}",
+
+                flush=True
+
+            )
+
+
+            if callback_data.startswith(
+
+                "download:"
+
+            ):
+
+                download(
+
+                    callback
+
+                )
+
+
+        return (
+
+            "OK",
+
+            200
+
         )
 
-        print(
-            "🔄 PROCESANDO UPDATE...",
-            flush=True
-        )
-
-        bot.process_new_updates(
-            [update]
-        )
-
-        print(
-            "✅ UPDATE PROCESADO",
-            flush=True
-        )
-
-        return "", 200
 
     except Exception as e:
 
         print(
+
             "❌ WEBHOOK ERROR:",
+
             repr(e),
+
             flush=True
+
         )
 
+
         return (
-            "Webhook error",
+
+            "ERROR",
+
             500
+
         )
+
 
 # ============================================================
 # HEALTH CHECK
@@ -882,22 +1091,32 @@ def health():
 
         "status": "ok",
 
-        "service": "telegram-bot"
+        "service": "telegram-bot",
+
+        "webhook": "active"
 
     }
 
 
 # ============================================================
-# MAIN
+# EJECUCIÓN LOCAL
 # ============================================================
 
 if __name__ == "__main__":
 
     print(
-        "Bot iniciado mediante webhook."
+
+        "🚀 Bot iniciado con Flask Webhook",
+
+        flush=True
+
     )
 
+
     app.run(
+
         host="0.0.0.0",
+
         port=PORT
+
     )
