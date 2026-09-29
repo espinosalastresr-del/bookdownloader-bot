@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: bookdownloader-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 0
+    healthCheckPath: /
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: LINK_SECRET
+        generateValue: true
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: LINK_TTL_SECONDS
+        value: "86400"
