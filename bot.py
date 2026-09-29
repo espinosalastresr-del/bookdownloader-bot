@@ -1,1122 +1,206 @@
+import base64
+import hashlib
+import hmac
+import json
 import os
 import re
-import tempfile
+import threading
+import time
+from typing import Optional, Tuple
 
 import requests
 import telebot
+from flask import Flask, Response, abort, jsonify, request
 
-from flask import Flask, request
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+LINK_SECRET = os.environ.get("LINK_SECRET")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
+PORT = int(os.environ.get("PORT", "10000"))
+LINK_TTL = int(os.environ.get("LINK_TTL_SECONDS", "86400"))
+STREAM_TIMEOUT = (15, 60)
 
-
-# ============================================================
-# CONFIGURACIÓN
-# ============================================================
-
-BOT_TOKEN = os.environ.get(
-    "BOT_TOKEN",
-    "8867573523:AAE0SOGYlOqlSq5odJD2Cnyp7cLiTwm6Rmw"
-)
-
-API_URL = os.environ.get(
-    "API_URL",
-    "https://bookdownloader-api.onrender.com/"
-).rstrip("/")
-
-PORT = int(
-    os.environ.get(
-        "PORT",
-        "10000"
-    )
-)
-
-
-# ============================================================
-# TELEGRAM BOT
-# ============================================================
-
-bot = telebot.TeleBot(
-    BOT_TOKEN,
-    parse_mode="HTML"
-)
-
-
-# ============================================================
-# FLASK
-# ============================================================
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is required")
+if not LINK_SECRET:
+    raise RuntimeError("LINK_SECRET is required")
+if not WEBHOOK_SECRET:
+    raise RuntimeError("WEBHOOK_SECRET is required")
 
 app = Flask(__name__)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+session = requests.Session()
+stream_slots = threading.BoundedSemaphore(8)
+TELEGRAM_API = "https://api.telegram.org"
+TELEGRAM_FILE = "https://api.telegram.org/file"
 
+def b64u(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
-# ============================================================
-# MEMORIA TEMPORAL
-# ============================================================
+def unb64u(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
-# user_id -> {
-#     md5 -> book
-# }
+def sign_link(file_id: str, filename: str, size: Optional[int]) -> str:
+    payload = {"v": 1, "file_id": file_id, "name": filename, "size": size, "exp": int(time.time()) + LINK_TTL}
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    body = b64u(raw)
+    sig = hmac.new(LINK_SECRET.encode(), body.encode(), hashlib.sha256).digest()
+    return body + "." + b64u(sig)
 
-user_searches = {}
-
-
-# ============================================================
-# START
-# ============================================================
-
-def start(message):
-
-    bot.send_message(
-
-        message["chat"]["id"],
-
-        "📚 <b>Biblioteca Digital</b>\n\n"
-
-        "Envíame el nombre del documento que deseas buscar.\n\n"
-
-        "Ejemplo:\n"
-
-        "<code>Python Programming</code>"
-
-    )
-
-
-# ============================================================
-# HELP
-# ============================================================
-
-def help_command(message):
-
-    bot.send_message(
-
-        message["chat"]["id"],
-
-        "📚 <b>Ayuda</b>\n\n"
-
-        "Escribe el título o autor que quieres buscar.\n\n"
-
-        "El bot mostrará los resultados disponibles."
-
-    )
-
-
-# ============================================================
-# BÚSQUEDA
-# ============================================================
-
-def search(message):
-
-    chat_id = message["chat"]["id"]
-
-    user_id = message["from"]["id"]
-
-    query = message.get(
-        "text",
-        ""
-    ).strip()
-
-
-    if not query:
-
-        return
-
-
-    msg = bot.send_message(
-
-        chat_id,
-
-        "🔎 Buscando..."
-
-    )
-
-
+def verify_link(token: str) -> dict:
     try:
-
-        response = requests.get(
-
-            f"{API_URL}/search",
-
-            params={
-                "q": query
-            },
-
-            timeout=60
-
-        )
-
-
-        response.raise_for_status()
-
-
-        data = response.json()
-
-
-        books = data.get(
-
-            "books",
-
-            []
-
-        )
-
-
-        if not books:
-
-            bot.edit_message_text(
-
-                "❌ No se encontraron resultados.",
-
-                chat_id,
-
-                msg.message_id
-
-            )
-
-            return
-
-
-        # ====================================================
-        # GUARDAR RESULTADOS
-        # ====================================================
-
-        user_searches[
-
-            user_id
-
-        ] = {
-
-            book["md5"]: book
-
-            for book in books
-
-            if book.get("md5")
-
-        }
-
-
-        # ====================================================
-        # ELIMINAR MENSAJE "BUSCANDO"
-        # ====================================================
-
-        try:
-
-            bot.delete_message(
-
-                chat_id,
-
-                msg.message_id
-
-            )
-
-        except Exception:
-
-            pass
-
-
-        # ====================================================
-        # MOSTRAR RESULTADOS
-        # ====================================================
-
-        for book in books[:10]:
-
-            send_book(
-
-                chat_id,
-
-                book
-
-            )
-
-
-    except requests.RequestException as e:
-
-        print(
-
-            "SEARCH API ERROR:",
-
-            repr(e),
-
-            flush=True
-
-        )
-
-
-        try:
-
-            bot.edit_message_text(
-
-                "⚠️ No se pudo conectar con el servidor.",
-
-                chat_id,
-
-                msg.message_id
-
-            )
-
-        except Exception:
-
-            pass
-
-
-    except Exception as e:
-
-        print(
-
-            "SEARCH ERROR:",
-
-            repr(e),
-
-            flush=True
-
-        )
-
-
-        try:
-
-            bot.edit_message_text(
-
-                "⚠️ Error al realizar la búsqueda.",
-
-                chat_id,
-
-                msg.message_id
-
-            )
-
-        except Exception:
-
-            pass
-
-
-# ============================================================
-# MOSTRAR RESULTADO
-# ============================================================
-
-def send_book(
-    chat_id,
-    book
-):
-
-    title = book.get(
-
-        "title",
-
-        "Sin título"
-
-    )
-
-
-    author = book.get(
-
-        "author",
-
-        "Desconocido"
-
-    )
-
-
-    publisher = book.get(
-
-        "publisher",
-
-        "Desconocido"
-
-    )
-
-
-    year = book.get(
-
-        "year",
-
-        "N/A"
-
-    )
-
-
-    language = book.get(
-
-        "language",
-
-        "N/A"
-
-    )
-
-
-    file_type = book.get(
-
-        "file_type",
-
-        "N/A"
-
-    )
-
-
-    size = book.get(
-
-        "size",
-
-        "N/A"
-
-    )
-
-
-    md5 = book.get(
-
-        "md5"
-
-    )
-
-
-    if not md5:
-
-        return
-
-
-    # ========================================================
-    # TEXTO
-    # ========================================================
-
-    text = (
-
-        f"📚 <b>{title}</b>\n\n"
-
-        f"👤 Autor: {author}\n"
-
-        f"🏢 Editorial: {publisher}\n"
-
-        f"📅 Año: {year}\n"
-
-        f"🌐 Idioma: {language}\n"
-
-        f"📄 Formato: {file_type}\n"
-
-        f"💾 Tamaño: {size}"
-
-    )
-
-
-    # ========================================================
-    # BOTÓN
-    # ========================================================
-
-    keyboard = (
-
-        telebot.types.InlineKeyboardMarkup()
-
-    )
-
-
-    keyboard.add(
-
-        telebot.types.InlineKeyboardButton(
-
-            "⬇️ Descargar",
-
-            callback_data=(
-
-                f"download:{md5}"
-
-            )
-
-        )
-
-    )
-
-
-    # ========================================================
-    # PORTADA
-    # ========================================================
-
-    cover = book.get(
-
-        "cover"
-
-    )
-
-
-    if cover:
-
-        if cover.startswith("/"):
-
-            cover = (
-
-                API_URL
-
-                + cover
-
-            )
-
-
-        try:
-
-            bot.send_photo(
-
-                chat_id,
-
-                cover,
-
-                caption=text,
-
-                reply_markup=keyboard
-
-            )
-
-            return
-
-
-        except Exception as e:
-
-            print(
-
-                "COVER ERROR:",
-
-                repr(e),
-
-                flush=True
-
-            )
-
-
-    # ========================================================
-    # SIN PORTADA
-    # ========================================================
-
-    bot.send_message(
-
-        chat_id,
-
-        text,
-
-        reply_markup=keyboard
-
-    )
-
-
-# ============================================================
-# DESCARGA
-# ============================================================
-
-def download(
-    callback
-):
-
-    user_id = (
-
-        callback["from"]["id"]
-
-    )
-
-
-    chat_id = (
-
-        callback["message"]["chat"]["id"]
-
-    )
-
-
-    message_id = (
-
-        callback["message"]["message_id"]
-
-    )
-
-
-    data = callback.get(
-
-        "data",
-
-        ""
-
-    )
-
-
-    md5 = data.split(
-
-        ":",
-
-        1
-
-    )[1]
-
-
-    # ========================================================
-    # RESPONDER AL CALLBACK
-    # ========================================================
-
-    bot.answer_callback_query(
-
-        callback["id"],
-
-        "⏳ Preparando descarga..."
-
-    )
-
-
-    # ========================================================
-    # BUSCAR LIBRO
-    # ========================================================
-
-    book = (
-
-        user_searches
-
-        .get(
-
-            user_id,
-
-            {}
-
-        )
-
-        .get(
-
-            md5
-
-        )
-
-    )
-
-
-    if not book:
-
-        bot.send_message(
-
-            chat_id,
-
-            "❌ El resultado ya no está disponible."
-
-        )
-
-        return
-
-
-    title = book.get(
-
-        "title",
-
-        "Documento"
-
-    )
-
-
-    # ========================================================
-    # ESTADO
-    # ========================================================
-
-    status = bot.send_message(
-
-        chat_id,
-
-        f"⬇️ Descargando:\n"
-
-        f"<b>{title}</b>"
-
-    )
-
-
-    temp_path = None
-
-
+        body, sig = token.split(".", 1)
+        expected = hmac.new(LINK_SECRET.encode(), body.encode(), hashlib.sha256).digest()
+        if not hmac.compare_digest(unb64u(sig), expected):
+            abort(403)
+        payload = json.loads(unb64u(body))
+        if payload.get("v") != 1 or int(payload["exp"]) < int(time.time()):
+            abort(410)
+        return payload
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        abort(404)
+
+def telegram_file(file_id: str) -> Tuple[str, dict]:
+    r = session.get(f"{TELEGRAM_API}/bot{BOT_TOKEN}/getFile", params={"file_id": file_id}, timeout=STREAM_TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("ok") or not data.get("result", {}).get("file_path"):
+        raise RuntimeError("Telegram getFile returned no file_path")
+    result = data["result"]
+    return f"{TELEGRAM_FILE}/bot{BOT_TOKEN}/{result['file_path']}", result
+
+def safe_filename(name: str) -> str:
+    name = os.path.basename(name or "download")
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip(" .")
+    return name[:240] or "download"
+
+def parse_range(value: Optional[str], size: int) -> Optional[Tuple[int, int]]:
+    if not value:
+        return None
+    m = re.fullmatch(r"bytes=(\d+)-(\d*)", value.strip())
+    if not m:
+        abort(416)
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else size - 1
+    if start >= size or end < start:
+        abort(416)
+    return start, min(end, size - 1)
+
+def common_headers(response: Response, filename: str, size: int, file_id: str) -> None:
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response.headers["Accept-Ranges"] = "bytes"
+    response.headers["ETag"] = '"' + file_id + '"'
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Content-Length"] = str(size)
+
+def proxy(token: str):
+    meta = verify_link(token)
+    size = meta.get("size")
+    if not isinstance(size, int) or size < 0:
+        abort(404)
+    filename = safe_filename(meta.get("name", "download"))
+    byte_range = parse_range(request.headers.get("Range"), size)
+
+    if request.method == "HEAD":
+        response = Response(status=200)
+        common_headers(response, filename, size, meta["file_id"])
+        return response
+
+    upstream_url, _ = telegram_file(meta["file_id"])
+    headers = {}
+    if byte_range:
+        headers["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
+
+    if not stream_slots.acquire(timeout=5):
+        return Response("Too many active downloads", status=429)
     try:
-
-        # ====================================================
-        # SOLICITAR ARCHIVO
-        # ====================================================
-
-        response = requests.get(
-
-            f"{API_URL}/download/{md5}",
-
-            stream=True,
-
-            timeout=300
-
-        )
-
-
-        response.raise_for_status()
-
-
-        # ====================================================
-        # NOMBRE DEL ARCHIVO
-        # ====================================================
-
-        filename = (
-
-            title
-
-            + "."
-
-            + book.get(
-
-                "file_type",
-
-                "bin"
-
-            )
-
-        )
-
-
-        content_disposition = (
-
-            response.headers.get(
-
-                "Content-Disposition"
-
-            )
-
-        )
-
-
-        if content_disposition:
-
-            match = re.search(
-
-                r'filename="?([^"]+)"?',
-
-                content_disposition
-
-            )
-
-
-            if match:
-
-                filename = (
-
-                    match.group(1)
-
-                )
-
-
-        # ====================================================
-        # LIMPIAR NOMBRE
-        # ====================================================
-
-        filename = re.sub(
-
-            r'[\\/*?:"<>|]',
-
-            "_",
-
-            filename
-
-        )
-
-
-        # ====================================================
-        # ARCHIVO TEMPORAL
-        # ====================================================
-
-        temp = (
-
-            tempfile.NamedTemporaryFile(
-
-                delete=False,
-
-                suffix="_download"
-
-            )
-
-        )
-
-
-        temp_path = temp.name
-
-
-        temp.close()
-
-
-        # ====================================================
-        # GUARDAR DESCARGA
-        # ====================================================
-
-        with open(
-
-            temp_path,
-
-            "wb"
-
-        ) as file:
-
-            for chunk in response.iter_content(
-
-                chunk_size=8192
-
-            ):
-
+        upstream = session.get(upstream_url, headers=headers, stream=True, allow_redirects=True, timeout=STREAM_TIMEOUT)
+    except requests.RequestException:
+        stream_slots.release()
+        return Response("Upstream unavailable", status=502)
+
+    if byte_range:
+        expected = f"bytes {byte_range[0]}-{byte_range[1]}/"
+        if upstream.status_code != 206 or not upstream.headers.get("Content-Range", "").startswith(expected):
+            upstream.close()
+            stream_slots.release()
+            return Response("Upstream does not provide a valid HTTP Range response", status=502)
+        status = 206
+        length = byte_range[1] - byte_range[0] + 1
+    else:
+        if upstream.status_code != 200:
+            upstream.close()
+            stream_slots.release()
+            return Response("Telegram file unavailable", status=502)
+        status = 200
+        length = size
+
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
                 if chunk:
-
-                    file.write(
-
-                        chunk
-
-                    )
-
-
-        # ====================================================
-        # ENVIAR A TELEGRAM
-        # ====================================================
-
-        with open(
-
-            temp_path,
-
-            "rb"
-
-        ) as file:
-
-            bot.send_document(
-
-                chat_id,
-
-                file,
-
-                visible_file_name=filename,
-
-                caption=(
-
-                    f"📚 {title}\n\n"
-
-                    "✅ Descarga completada."
-
-                )
-
-            )
-
-
-        # ====================================================
-        # BORRAR TEMPORAL
-        # ====================================================
-
-        if (
-
-            temp_path
-
-            and
-
-            os.path.exists(
-
-                temp_path
-
-            )
-
-        ):
-
-            os.remove(
-
-                temp_path
-
-            )
-
-
-        # ====================================================
-        # BORRAR ESTADO
-        # ====================================================
-
-        try:
-
-            bot.delete_message(
-
-                chat_id,
-
-                status.message_id
-
-            )
-
-        except Exception:
-
-            pass
-
-
-    except Exception as e:
-
-        print(
-
-            "DOWNLOAD ERROR:",
-
-            repr(e),
-
-            flush=True
-
-        )
-
-
-        # ====================================================
-        # LIMPIAR TEMPORAL
-        # ====================================================
-
-        if (
-
-            temp_path
-
-            and
-
-            os.path.exists(
-
-                temp_path
-
-            )
-
-        ):
-
-            try:
-
-                os.remove(
-
-                    temp_path
-
-                )
-
-            except Exception:
-
-                pass
-
-
-        # ====================================================
-        # ERROR
-        # ====================================================
-
-        try:
-
-            bot.edit_message_text(
-
-                "❌ No se pudo completar la descarga.",
-
-                chat_id,
-
-                status.message_id
-
-            )
-
-        except Exception:
-
-            pass
-
-
-# ============================================================
-# WEBHOOK
-# ============================================================
-
-@app.route(
-
-    "/webhook",
-
-    methods=["POST"]
-
-)
-def webhook():
-
-    try:
-
-        data = request.get_json(
-
-            force=True
-
-        )
-
-
-        if not data:
-
-            return (
-
-                "Bad Request",
-
-                400
-
-            )
-
-
-        print(
-
-            "🔥 WEBHOOK RECIBIDO",
-
-            flush=True
-
-        )
-
-
-        # ====================================================
-        # MESSAGE
-        # ====================================================
-
-        if "message" in data:
-
-            message = data["message"]
-
-
-            text = message.get(
-
-                "text",
-
-                ""
-
-            )
-
-
-            print(
-
-                f"💬 MESSAGE: {text}",
-
-                flush=True
-
-            )
-
-
-            if text == "/start":
-
-                start(
-
-                    message
-
-                )
-
-
-            elif text == "/help":
-
-                help_command(
-
-                    message
-
-                )
-
-
-            elif text.startswith("/"):
-
-                bot.send_message(
-
-                    message["chat"]["id"],
-
-                    "❓ Comando desconocido."
-
-                )
-
-
-            else:
-
-                search(
-
-                    message
-
-                )
-
-
-        # ====================================================
-        # CALLBACK QUERY
-        # ====================================================
-
-        elif "callback_query" in data:
-
-            callback = data[
-
-                "callback_query"
-
-            ]
-
-
-            callback_data = callback.get(
-
-                "data",
-
-                ""
-
-            )
-
-
-            print(
-
-                f"🔘 CALLBACK: {callback_data}",
-
-                flush=True
-
-            )
-
-
-            if callback_data.startswith(
-
-                "download:"
-
-            ):
-
-                download(
-
-                    callback
-
-                )
-
-
-        return (
-
-            "OK",
-
-            200
-
-        )
-
-
-    except Exception as e:
-
-        print(
-
-            "❌ WEBHOOK ERROR:",
-
-            repr(e),
-
-            flush=True
-
-        )
-
-
-        return (
-
-            "ERROR",
-
-            500
-
-        )
-
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
-
-@app.route(
-
-    "/",
-
-    methods=["GET"]
-
-)
+                    yield chunk
+        finally:
+            upstream.close()
+            stream_slots.release()
+
+    response = Response(generate(), status=status, mimetype="application/octet-stream")
+    common_headers(response, filename, length, meta["file_id"])
+    if status == 206:
+        response.headers["Content-Range"] = upstream.headers["Content-Range"]
+    return response
+
+@app.get("/")
 def health():
+    return jsonify(status="ok", service="telegram-rustdl-range-proxy")
 
-    return {
+@app.route("/d/<token>", methods=["GET", "HEAD"])
+def download(token):
+    return proxy(token)
 
-        "status": "ok",
+@bot.message_handler(commands=["start", "help"])
+def start(message):
+    bot.reply_to(message, "📦 <b>RustDL Telegram Bridge</b>\n\nReenvíame un archivo como documento y te devolveré un enlace HTTP compatible con Range para usarlo con RustDL.\n\n" f"Los enlaces expiran en {LINK_TTL // 3600} h.")
 
-        "service": "telegram-bot",
+@bot.message_handler(content_types=["document", "audio", "video"])
+def file_message(message):
+    item = message.document or message.audio or message.video
+    file_id = item.file_id
+    size = getattr(item, "file_size", None)
+    filename = getattr(item, "file_name", None) or getattr(item, "title", None) or "download"
+    filename = safe_filename(filename)
+    token = sign_link(file_id, filename, size)
+    base = (os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
+    if not base:
+        bot.reply_to(message, "⚠️ No hay URL pública configurada.")
+        return
+    link = f"{base}/d/{token}"
+    bot.reply_to(message, f"✅ <b>{filename}</b>\n📦 {size if size is not None else 'desconocido'} bytes\n\n<code>{link}</code>\n\nEnlace firmado y temporal. No se guarda una copia en Render.", disable_web_page_preview=True)
 
-        "webhook": "active"
+@app.post("/webhook/<secret>")
+def webhook(secret):
+    if not hmac.compare_digest(secret, WEBHOOK_SECRET):
+        abort(403)
+    update = request.get_json(silent=True)
+    if not update:
+        return "bad request", 400
+    bot.process_new_updates([telebot.types.Update.de_json(json.dumps(update))])
+    return "ok"
 
-    }
-
-
-# ============================================================
-# EJECUCIÓN LOCAL
-# ============================================================
+def configure_webhook():
+    base = (os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
+    if not base:
+        raise RuntimeError("PUBLIC_BASE_URL or RENDER_EXTERNAL_URL is required")
+    url = f"{base}/webhook/{WEBHOOK_SECRET}"
+    r = session.post(f"{TELEGRAM_API}/bot{BOT_TOKEN}/setWebhook", json={"url": url, "secret_token": WEBHOOK_SECRET, "drop_pending_updates": False}, timeout=STREAM_TIMEOUT)
+    r.raise_for_status()
+    if not r.json().get("ok"):
+        raise RuntimeError(f"setWebhook failed: {r.text}")
 
 if __name__ == "__main__":
-
-    print(
-
-        "🚀 Bot iniciado con Flask Webhook",
-
-        flush=True
-
-    )
-
-
-    app.run(
-
-        host="0.0.0.0",
-
-        port=PORT
-
-    )
+    configure_webhook()
+    app.run(host="0.0.0.0", port=PORT)
+else:
+    try:
+        configure_webhook()
+    except Exception as exc:
+        print(f"webhook setup failed: {exc}", flush=True)
