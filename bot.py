@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import threading
@@ -27,7 +28,9 @@ if not WEBHOOK_SECRET:
     raise RuntimeError("WEBHOOK_SECRET is required")
 
 app = Flask(__name__)
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("rustdl-bridge")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=False, exception_handler=None)
 session = requests.Session()
 stream_slots = threading.BoundedSemaphore(8)
 TELEGRAM_API = "https://api.telegram.org"
@@ -159,10 +162,12 @@ def download(token):
 
 @bot.message_handler(commands=["start", "help"])
 def start(message):
+    logger.info("Handling /start or /help from chat_id=%s", getattr(message.chat, "id", None))
     bot.reply_to(message, "📦 <b>RustDL Telegram Bridge</b>\n\nReenvíame un archivo como documento y te devolveré un enlace HTTP compatible con Range para usarlo con RustDL.\n\n" f"Los enlaces expiran en {LINK_TTL // 3600} h.")
 
 @bot.message_handler(content_types=["document", "audio", "video"])
 def file_message(message):
+    logger.info("Handling file message from chat_id=%s", getattr(message.chat, "id", None))
     item = message.document or message.audio or message.video
     file_id = item.file_id
     size = getattr(item, "file_size", None)
@@ -180,11 +185,21 @@ def file_message(message):
 def webhook(secret):
     if not hmac.compare_digest(secret, WEBHOOK_SECRET):
         abort(403)
+    telegram_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not hmac.compare_digest(telegram_secret, WEBHOOK_SECRET):
+        abort(403)
     update = request.get_json(silent=True)
     if not update:
         return "bad request", 400
-    bot.process_new_updates([telebot.types.Update.de_json(json.dumps(update))])
-    return "ok"
+    try:
+        parsed = telebot.types.Update.de_json(json.dumps(update))
+        logger.info("Telegram update received: update_id=%s", getattr(parsed, "update_id", None))
+        bot.process_new_updates([parsed])
+        logger.info("Telegram update processed: update_id=%s", getattr(parsed, "update_id", None))
+        return "ok"
+    except Exception:
+        logger.exception("Telegram update processing failed")
+        return "internal error", 500
 
 def configure_webhook():
     base = (os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
@@ -195,6 +210,7 @@ def configure_webhook():
     r.raise_for_status()
     if not r.json().get("ok"):
         raise RuntimeError(f"setWebhook failed: {r.text}")
+    logger.info("Telegram webhook configured: %s/webhook/<secret>", base)
 
 if __name__ == "__main__":
     configure_webhook()
